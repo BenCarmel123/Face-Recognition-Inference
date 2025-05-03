@@ -1,0 +1,23 @@
+# Virtual environments
+.venv/
+data/venv/
+
+# Python cache
+__pycache__/
+utils/__pycache__/
+models/__pycache__/
+data/__pycache__/
+
+# Training data
+data/train/
+data/trainCrop/
+
+# IDE configs
+.idea/
+.vscode/
+
+# File types to ignore
+*.csv
+*.pdf
+*.zip
+*.pt
