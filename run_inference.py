@@ -8,6 +8,7 @@ import cv2
 import onnxruntime as ort
 from numpy.linalg import norm
 from models.FECNet import FECNet
+from pathlib import Path
 
 # === CONFIG ===
 DEVICE = torch.device("cpu")
@@ -64,6 +65,26 @@ def get_features_fecnet(img): # returns the vector representation of the image a
     from get_representation import get_FECNet_representation
     return get_FECNet_representation(img)
 
+def get_fer_8_plus_representation(img, session):
+    """
+    Given a cropped BGR face image, preprocesses it and runs it through the FER+ model.
+    
+    Parameters:
+        cropped_face (np.ndarray): BGR face image as a NumPy array.
+        
+    Returns:
+        np.ndarray: The output logits or probabilities from the FER+ model (shape: [8]).
+    """
+    # Convert to grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Resize to model's input size
+    resized = cv2.resize(gray, (64, 64))
+    # Reshape to match model input: (1, 1, 64, 64)
+    blob = resized.astype(np.float32).reshape(1, 1, 64, 64)
+    # Set input and perform inference
+    input_name = session.get_inputs()[0].name 
+    output = session.run(None, {input_name: blob})[0]
+    return output[0]
 
 def get_features_ferplus(img, session):
     # Convert RGB to grayscale (FERPlus expects grayscale)
@@ -149,7 +170,7 @@ def run_inference_and_save(model_type, dataset_name):
 
     elif model_type == "FERPlus": # load FERPlus model and get img vectors
         session = ort.InferenceSession(FERPLUS_PATH)
-        get_features = lambda img: get_features_ferplus(img, session)
+        get_features = lambda img: get_fer_8_plus_representation(img, session)
     
     count = 0
     for i, row in triplets_df.iterrows():
@@ -239,8 +260,9 @@ def run_inference_and_save(model_type, dataset_name):
 # === RUN ALL COMBINATIONS ===
 if __name__ == "__main__":
     print("Initializing Inference")
-    run_inference_and_save("FERPlus", "trainCrop")
-    #for model_type in ["FECNet", "FERPlus"]:
-       # for dataset in ["train", "trainCrop"]:
-            #print("Running inference with " + str(model_type) + "on " + str(dataset))
-           # run_inference_and_save(model_type, dataset)
+    for model in ["FECNet", "FERPlus"]:
+        for dataset in ["train", "trainCrop"]:
+                print("Running inference with " + str(model) + "on " + str(dataset))
+                run_inference_and_save(model, dataset)
+    
+    
