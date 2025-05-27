@@ -12,15 +12,13 @@ from pathlib import Path
 
 # === CONFIG ===
 DEVICE = torch.device("cpu")
-NUM_TRIPLETS = 100
+NUM_TRIPLETS = 1592
 LABELS = { # labels
-    "train": "data/labels.csv", # original cropping method
-    "trainCrop": "data/labels_mediapipe.csv" # according to Liron's cropping method
+    "train2": "data/labels.csv", # original cropping method
 }
 
 IMAGE_DIRS = { # images
-    "train": "data/train", # original cropping method
-    "trainCrop": "data/trainCrop" # according to Liron's cropping method
+    "train2": "data/train2", 
 }
 
 FERPLUS_PATH = "emotion-ferplus.onnx" # Liron's model 
@@ -36,6 +34,10 @@ def compute_cosine(a, b): # cosine similarity
 
 def compute_pearson(a, b): # pearson 
     return np.corrcoef(a, b)[0, 1]
+
+def compute_l2(a,b): #L2 Norm
+    return np.linalg.norm(a-b)
+
 
 """"
 def parse_label(raw): # get integer representing label
@@ -109,19 +111,19 @@ def get_features_ferplus(img, session):
 
 def computations(simCalc, features, row): 
     # compute similarities between each pair of images
-
     sim_23 = simCalc(features[1], features[2])
     sim_13 = simCalc(features[0], features[2])
     sim_12 = simCalc(features[0], features[1])
     sims = [sim_23, sim_13, sim_12]
-    print(sims)
-    predicted = sims.index(max(sims))  # generate model prediction
-    print(predicted)
+    predicted = sims.index(min(sims)) if simCalc.__name__ == "compute_l2" else sims.index(max(sims))  # generate model prediction
     label = int(row[4]) # get corresponding label
-    print(label)
-    new_score = sims[predicted] - (sum([sim_score for sim_score in sims if sim_score != sims[predicted]]) / 2) 
+    others = [s for i, s in enumerate(sims) if i != predicted] # because 2 scores might be equal
+    new_score = sims[predicted] - np.mean(others)
     is_correct = predicted == label # compare prediction to label
-    exp_sims = np.exp(sims) # create array of exponents
+    if simCalc.__name__ == "compute_l2":
+        exp_sims = np.exp(-np.array(sims))
+    else:
+        exp_sims = np.exp(sims)
     probs = exp_sims / np.sum(exp_sims) # divide each element by the sum of exponents
     prob_correct = probs[predicted] # the likelihood score is the value of the similarity the model predicted 
     log_likelihood = math.log(prob_correct + 1e-12) # add epsilon to avoid log(0)
@@ -140,6 +142,9 @@ def run_inference_and_save(model_type, dataset_name):
     pearson_total_log_likelihood = 0.0
     pearson_total_new_score = 0.0
     pearson_accuracy = 0
+    l2_total_log_likelihood = 0.0
+    l2_total_new_score = 0.0
+    l2_accuracy = 0
 
     try: # create data frames from csv 
         triplets_df = pd.read_csv(labels_path, header=None).drop_duplicates().head(NUM_TRIPLETS)
@@ -175,7 +180,7 @@ def run_inference_and_save(model_type, dataset_name):
     count = 0
     for i, row in triplets_df.iterrows():
         count+=1
-        if count % 25 == 0:
+        if count % 100 == 0:
             print(str(count) + " iteration") # just to keep track
         try:
             img_paths = [os.path.join(image_dir, os.path.basename(row[j])) for j in range(3)] # creates list of image paths
@@ -186,9 +191,7 @@ def run_inference_and_save(model_type, dataset_name):
             # compute scores with both formulas
             cos_res = computations(compute_cosine, features, row) 
             pearson_res = computations(compute_pearson, features, row)
-            if not cos_res or not pearson_res:
-                print("problem generating data, skipping this triplet")
-                continue
+            l2_res = computations(compute_l2, features, row)
             # global scores
             cos_total_log_likelihood += cos_res[5]
             cos_total_new_score += cos_res[6]
@@ -196,7 +199,9 @@ def run_inference_and_save(model_type, dataset_name):
             pearson_total_log_likelihood += pearson_res[5]
             pearson_total_new_score += pearson_res[6]
             pearson_accuracy += 1 if pearson_res[4] else 0
-
+            l2_total_log_likelihood += l2_res[5]
+            l2_total_new_score += l2_res[6]
+            l2_accuracy += 1 if l2_res[4] else 0
              # Get class type from original dataset
             original_index = extract_original_row_index(os.path.basename(img_paths[0]))
             try:
@@ -225,6 +230,12 @@ def run_inference_and_save(model_type, dataset_name):
                 round(pearson_res[5], 4),
                 round(pearson_res[6], 4),
                 pearson_res[4],
+                round(l2_res[0], 4),
+                round(l2_res[1], 4),
+                round(l2_res[2], 4),
+                round(l2_res[5], 4),
+                round(l2_res[6], 4),
+                l2_res[4],
                 class_type
             ]) # collect data of current triplet, rounding the values to 4 digits after decimal
 
@@ -235,22 +246,27 @@ def run_inference_and_save(model_type, dataset_name):
     print("on to global calculations")
     cos_accuracy = cos_accuracy / len(result_rows) * 100 if result_rows else 0.0
     pearson_accuracy = pearson_accuracy / len(result_rows) * 100 if result_rows else 0.0
+    l2_accuracy = l2_accuracy / len(result_rows) * 100 if result_rows else 0.0
     cos_avg_log_likelihood = cos_total_log_likelihood / len(result_rows) if result_rows else 0.0
     pearson_avg_log_likelihood = pearson_total_log_likelihood / len(result_rows) if result_rows else 0.0
+    l2_avg_log_likelihood = l2_total_log_likelihood / len(result_rows) if result_rows else 0.0
     cos_avg_new_score = cos_total_new_score / len(result_rows) if result_rows else 0.0
     pearson_avg_new_score = pearson_total_new_score / len(result_rows) if result_rows else 0.0
+    l2_avg_new_score = l2_total_new_score / len(result_rows) if result_rows else 0.0
     output_name = f"results_{model_type}_{dataset_name}.csv"
 
     with open(output_name, "w") as f:
         f.write(f"# Method: {model_type} | Dataset: {dataset_name} | Cos: | Accuracy: "
                 f"{cos_accuracy:.2f}% | Avg Log-Likelihood: {cos_avg_log_likelihood:.4f} | Avg new score: {cos_avg_new_score:.4f}  | Pearson: | Accuracy: " 
-                f"{pearson_accuracy:.2f}% | Avg Log-Likelihood: {pearson_avg_log_likelihood:.4f} | Avg new score: {pearson_avg_new_score:.4f}\n")
+                f"{pearson_accuracy:.2f}% | Avg Log-Likelihood: {pearson_avg_log_likelihood:.4f} | Avg new score: {pearson_avg_new_score:.4f} | L2: | Accuracy: "
+                f"{l2_accuracy:.2f}% | Avg Log-Likelihood: {l2_avg_log_likelihood:.4f} | Avg new score: {l2_avg_new_score:.4f}\n")
         
         df = pd.DataFrame(result_rows, columns=[
             "triplet_id", "img1_path", "img2_path", "img3_path", "most_similar", 
             "c_comp_23", "c_comp_13", "c_comp_12", "c_log_likelihood", "c_new_score", "c_correct",
-            "p_comp_23", "p_comp_13", "p_comp_12", "p_log_likelihood", "p_new_score",
-            "p_correct", "class_type"
+            "p_comp_23", "p_comp_13", "p_comp_12", "p_log_likelihood", "p_new_score", "p_correct",
+            "l2_comp_23", "l2_comp_13", "l2_comp_12", "l2_log_likelihood", "l2_new_score", "l2_correct",
+            "class_type"
         ])
         df.to_csv(f, sep=",", index=False)
         print("file done")
@@ -261,8 +277,9 @@ def run_inference_and_save(model_type, dataset_name):
 if __name__ == "__main__":
     print("Initializing Inference")
     for model in ["FECNet", "FERPlus"]:
-        for dataset in ["train", "trainCrop"]:
+        for dataset in ["train2"]:
                 print("Running inference with " + str(model) + "on " + str(dataset))
                 run_inference_and_save(model, dataset)
     
     
+
