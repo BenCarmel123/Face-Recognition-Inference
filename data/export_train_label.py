@@ -10,11 +10,11 @@ def grade_mode(grades):
         return None
     return Counter(grades).most_common(1)[0][0]
 
-def create_label1(use_mediapipe=False):
-    input_csv = 'data/FEC_dataset/faceexp-comparison-data-train-public.csv'
-    mapping_file = 'data/triplet_to_row_mapping.json'
-    image_dir = "data/trainCrop" if use_mediapipe else "data/train"
-    output_csv = 'data/labels_mediapipe.csv' if use_mediapipe else 'data/labels.csv'
+def create_label1():
+    input_csv = 'FEC_dataset/faceexp-comparison-data-train-public.csv'
+    mapping_file = 'triplet_to_row_mapping.json'
+    image_dir = "train2" 
+    output_csv = 'labels_mediapipe.csv'
 
     if not os.path.exists(image_dir):
         print(f"❌ Directory not found: {image_dir}")
@@ -90,11 +90,12 @@ def create_label1(use_mediapipe=False):
 
         rows.append([name1, name2, name3, similarity_type, label - 1])
 
-        if len(rows) >= 100:
-            break
 
     if rows:
         pd.DataFrame(rows).to_csv(output_csv, index=False, header=False)
         print(f"✅ Created {output_csv} with {len(rows)} triplets")
     else:
         print("❌ No valid triplets found.")
+
+if __name__ == '__main__':
+    create_label1()
