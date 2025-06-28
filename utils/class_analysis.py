@@ -1,6 +1,7 @@
 import pandas as pd 
 import os
 from pathlib import Path
+import sys
 
 # Loop through all files in the folder
 def class_analysis(folder_path):
@@ -14,24 +15,26 @@ def class_analysis(folder_path):
                     print(f"Skipping {filename} (already processed)")
                     continue
 
-            df = pd.read_csv(file_path, skiprows=1)  # skip comment line
+            df = pd.read_csv(file_path, skiprows=1) if filename.startswith('results_') else pd.read_csv(file_path)
 
-            if 'class_type' not in df.columns or 'l2_correct' not in df.columns:
+            if 'label' not in df.columns or 'is_correct' not in df.columns:
                 print(f"Skipping {filename} (missing required columns)")
                 continue
 
-            grouped = df.groupby('class_type')
-            mean_l2 = grouped['l2_correct'].mean()
+            # Group by class label and calculate mean accuracy for each class
+            grouped = df.groupby('label')
+            mean_acc = grouped['is_correct'].mean()
 
             summary = pd.DataFrame({
-                'class_type': mean_l2.index,
-                'l2_accuracy': mean_l2
+                'class_label': mean_acc.index,
+                'accuracy': mean_acc
             })
 
             with open(file_path, "a") as f:  # add the summary section
-                f.write("\n# Summary\n")
+                f.write("\n# Summary (accuracy by class)\n")
             summary.to_csv(file_path, mode='a', index=False)
+            print(f"Processed {filename} - class-wise accuracy summary added.")
 
 if __name__ == "__main__":
-    folder_path = Path("C:/Users/benca/PsyTask1/FECNet/Analysis/Res4.0")
+    folder_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
     class_analysis(folder_path)

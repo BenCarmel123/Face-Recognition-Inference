@@ -11,10 +11,10 @@ def grade_mode(grades):
     return Counter(grades).most_common(1)[0][0]
 
 def create_label1():
-    input_csv = 'FEC_dataset/faceexp-comparison-data-train-public.csv'
+    input_csv = 'faceexp-comparison-data-train-public.csv'
     mapping_file = 'triplet_to_row_mapping.json'
-    image_dir = "train2" 
-    output_csv = 'labels_mediapipe.csv'
+    image_dir = "ValidTriplets" 
+    output_csv = 'labels.csv'
 
     if not os.path.exists(image_dir):
         print(f"❌ Directory not found: {image_dir}")

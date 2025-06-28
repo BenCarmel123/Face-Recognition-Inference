@@ -8,12 +8,13 @@ import cv2
 import onnxruntime as ort
 from numpy.linalg import norm
 from pathlib import Path
+from tqdm import tqdm
 
 # === CONFIG ===
 DEVICE = torch.device("cpu")
 NUM_TRIPLETS = 1592
 LABELS = { # labels
-    "labels": "data/labels.csv", # original cropping method
+    "ValidTriplets": "data/labels.csv", # original cropping method
 }
 
 IMAGE_DIRS = { # images
@@ -119,12 +120,12 @@ def get_layer_features(img, session):
     outputs = session.run(None, {input_name: blob})
     return {name: out[0].flatten() for name, out in zip(LAYER_OUTPUTS, outputs)}
 
-def computations_l2(features, row):
-    sim_23 = compute_l2(features[1], features[2])
-    sim_13 = compute_l2(features[0], features[2])
-    sim_12 = compute_l2(features[0], features[1])
+def computations_cosine(features, row):
+    sim_23 = compute_cosine(features[1], features[2])
+    sim_13 = compute_cosine(features[0], features[2])
+    sim_12 = compute_cosine(features[0], features[1])
     sims = [sim_23, sim_13, sim_12]
-    predicted = sims.index(min(sims))
+    predicted = sims.index(max(sims))  # For cosine, higher is more similar
     label = int(row[4])
     is_correct = predicted == label
     return [sim_23, sim_13, sim_12, label, is_correct]
@@ -137,20 +138,31 @@ def run_inference_and_save(dataset_name):
     session = ort.InferenceSession(FERPLUS_PATH)
     triplets_df = pd.read_csv(labels_path, header=None).drop_duplicates().head(NUM_TRIPLETS)
     results = {layer: [] for layer in LAYER_OUTPUTS}
-    for i, row in triplets_df.iterrows():
-        img_paths = [os.path.join(image_dir, os.path.basename(row[j])) for j in range(3)]
-        imgs = [load_image_cv2(p) for p in img_paths]
-        if any(img is None for img in imgs):
-            continue
-        features_by_layer = [get_layer_features(img, session) for img in imgs]
-        for layer in LAYER_OUTPUTS:
-            features = [f[layer] for f in features_by_layer]
-            res = computations_l2(features, row)
-            results[layer].append([i] + res)
+    correct_counts = {layer: 0 for layer in LAYER_OUTPUTS}
+    total_counts = {layer: 0 for layer in LAYER_OUTPUTS}
+    total_work = len(triplets_df) * len(LAYER_OUTPUTS)
+    with tqdm(total=total_work, desc=f"Processing all triplets × layers for {dataset_name}") as pbar:
+        for i, row in triplets_df.iterrows():
+            img_paths = [os.path.join(image_dir, os.path.basename(row[j])) for j in range(3)]
+            imgs = [load_image_cv2(p) for p in img_paths]
+            if any(img is None for img in imgs):
+                pbar.update(len(LAYER_OUTPUTS))
+                continue
+            features_by_layer = [get_layer_features(img, session) for img in imgs]
+            for layer in LAYER_OUTPUTS:
+                features = [f[layer] for f in features_by_layer]
+                res = computations_cosine(features, row)
+                results[layer].append([i] + res)
+                if res[-1]:
+                    correct_counts[layer] += 1
+                total_counts[layer] += 1
+                pbar.update(1)
     for layer in LAYER_OUTPUTS:
         df = pd.DataFrame(results[layer], columns=["triplet_id", "sim_23", "sim_13", "sim_12", "label", "is_correct"])
-        df.to_csv(f"results_{layer}.csv", index=False)
+        df.to_csv(f"results_{layer}_cosine.csv", index=False)
         print(f"Saved results for {layer}")
+        accuracy = 100.0 * correct_counts[layer] / total_counts[layer] if total_counts[layer] > 0 else 0.0
+        print(f"Layer {layer}: Accuracy = {accuracy:.2f}% ({correct_counts[layer]}/{total_counts[layer]})")
 
 # === RUN ALL COMBINATIONS ===
 if __name__ == "__main__":
