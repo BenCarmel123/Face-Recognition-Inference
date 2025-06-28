@@ -20,7 +20,15 @@ IMAGE_DIRS = { # images
     "ValidTriplets": "data/ValidTriplets", 
 }
 
-FERPLUS_PATH = "ferplus/emotion-ferplus.onnx" # Liron's model 
+FERPLUS_PATH = "ferplus/emotion-ferplus-multi-output.onnx"
+LAYER_OUTPUTS = [
+    "ReLU384_Output_0",
+    "ReLU496_Output_0",
+    "ReLU636_Output_0",
+    "ReLU670_Output_0",
+    "Plus692_Output_0"
+]
+
 DATASET_CSV = "data/faceexp-comparison-data-train-public.csv"
 
 # === HELPERS ===
@@ -103,177 +111,53 @@ def get_features_ferplus(img, session):
     features_norm = (features_flat - mean) / (std + 1e-12)  # Add small epsilon to prevent division by zero
     return features_norm
 
-def computations(simCalc, features, row): 
-    # compute similarities between each pair of images
-    sim_23 = simCalc(features[1], features[2])
-    sim_13 = simCalc(features[0], features[2])
-    sim_12 = simCalc(features[0], features[1])
+def get_layer_features(img, session):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    resized = cv2.resize(gray, (64, 64))
+    blob = resized.astype(np.float32).reshape(1, 1, 64, 64)
+    input_name = session.get_inputs()[0].name
+    outputs = session.run(None, {input_name: blob})
+    return {name: out[0].flatten() for name, out in zip(LAYER_OUTPUTS, outputs)}
+
+def computations_l2(features, row):
+    sim_23 = compute_l2(features[1], features[2])
+    sim_13 = compute_l2(features[0], features[2])
+    sim_12 = compute_l2(features[0], features[1])
     sims = [sim_23, sim_13, sim_12]
-    predicted = sims.index(min(sims)) if simCalc.__name__ == "compute_l2" else sims.index(max(sims))  # generate model prediction
-    label = int(row[4]) # get corresponding label
-    others = [s for i, s in enumerate(sims) if i != predicted] # because 2 scores might be equal
-    new_score = sims[predicted] - np.mean(others)
-    is_correct = predicted == label # compare prediction to label
-    if simCalc.__name__ == "compute_l2":
-        exp_sims = np.exp(-np.array(sims))
-    else:
-        exp_sims = np.exp(sims)
-    probs = exp_sims / np.sum(exp_sims) # divide each element by the sum of exponents
-    prob_correct = probs[predicted] # the likelihood score is the value of the similarity the model predicted 
-    log_likelihood = math.log(prob_correct + 1e-12) # add epsilon to avoid log(0)
-    res = [round(sim_23, 4), round(sim_13, 4), round(sim_12, 4), label, is_correct, round(log_likelihood, 4), round(new_score, 4)]
-    return res
+    predicted = sims.index(min(sims))
+    label = int(row[4])
+    is_correct = predicted == label
+    return [sim_23, sim_13, sim_12, label, is_correct]
 
 # === MAIN FUNCTION ===
-def run_inference_and_save(model_type, dataset_name):
+def run_inference_and_save(dataset_name):
     print("started main function")
     image_dir = IMAGE_DIRS[dataset_name]
     labels_path = LABELS[dataset_name]
-    result_rows = []
-    cos_total_log_likelihood = 0.0
-    cos_total_new_score = 0.0
-    cos_accuracy = 0
-    pearson_total_log_likelihood = 0.0
-    pearson_total_new_score = 0.0
-    pearson_accuracy = 0
-    l2_total_log_likelihood = 0.0
-    l2_total_new_score = 0.0
-    l2_accuracy = 0
-
-    try: # create data frames from csv 
-        triplets_df = pd.read_csv(labels_path, header=None).drop_duplicates().head(NUM_TRIPLETS)
-        class_type_df = pd.read_csv(DATASET_CSV, header=None, low_memory=False)
-    except Exception as e:
-        print(f"Error loading CSV files: {e}")
-        return
-
-    if model_type == "FECNet": # load FECNet model and get img vectors
-        model = FECNet(pretrained=False)
-        try:
-            # Try with strict=True to catch any mismatches
-            model.load_state_dict(torch.load(FECNET_PATH, map_location=DEVICE), strict=True)
-            print("Successfully loaded weights from", FECNET_PATH)
-        except Exception as e:
-            print(f"Error loading weights strictly: {e}")
-            try:
-                # Fall back to non-strict loading if strict fails
-                model.load_state_dict(torch.load(FECNET_PATH, map_location=DEVICE), strict=False)
-                print("Loaded weights with some mismatches")
-            except Exception as e:
-                print(f"Failed to load weights: {e}")
-                print("WARNING: Using randomly initialized weights!")
-        
-        model.to(DEVICE)
-        model.eval()
-        get_features = lambda img: get_features_fecnet(img)
-
-    elif model_type == "FERPlus": # load FERPlus model and get img vectors
-        session = ort.InferenceSession(FERPLUS_PATH)
-        get_features = lambda img: get_fer_8_plus_representation(img, session)
-    
-    count = 0
+    session = ort.InferenceSession(FERPLUS_PATH)
+    triplets_df = pd.read_csv(labels_path, header=None).drop_duplicates().head(NUM_TRIPLETS)
+    results = {layer: [] for layer in LAYER_OUTPUTS}
     for i, row in triplets_df.iterrows():
-        count+=1
-        if count % 100 == 0:
-            print(str(count) + " iteration") # just to keep track
-        try:
-            img_paths = [os.path.join(image_dir, os.path.basename(row[j])) for j in range(3)] # creates list of image paths
-            imgs = [load_image_cv2(p) for p in img_paths] # loads each image in triplet
-            if any(img is None for img in imgs): # if a certain error occurs just skip the triplet
-                continue
-            features = [get_features(img) for img in imgs]
-            # compute scores with both formulas
-            cos_res = computations(compute_cosine, features, row) 
-            pearson_res = computations(compute_pearson, features, row)
-            l2_res = computations(compute_l2, features, row)
-            # global scores
-            cos_total_log_likelihood += cos_res[5]
-            cos_total_new_score += cos_res[6]
-            cos_accuracy += 1 if cos_res[4] else 0
-            pearson_total_log_likelihood += pearson_res[5]
-            pearson_total_new_score += pearson_res[6]
-            pearson_accuracy += 1 if pearson_res[4] else 0
-            l2_total_log_likelihood += l2_res[5]
-            l2_total_new_score += l2_res[6]
-            l2_accuracy += 1 if l2_res[4] else 0
-             # Get class type from original dataset
-            original_index = extract_original_row_index(os.path.basename(img_paths[0]))
-            try:
-                if original_index is not None and original_index < len(class_type_df):
-                    class_type = class_type_df.iloc[original_index, 15] # extract class type 
-                else:
-                    class_type = "unknown"
-            except Exception as e:
-                print(f"⚠️ Could not get metadata for index {original_index}: {e}")
-                class_type = "unknown"
-
-            # Use local image paths in output
-            result_rows.append([ 
-                i,
-                img_paths[0], img_paths[1], img_paths[2],
-                cos_res[3],
-                round(cos_res[0], 4),
-                round(cos_res[1], 4),
-                round(cos_res[2], 4),
-                round(cos_res[5], 4),
-                round(cos_res[6], 4),
-                cos_res[4],
-                round(pearson_res[0], 4),
-                round(pearson_res[1], 4),
-                round(pearson_res[2], 4),
-                round(pearson_res[5], 4),
-                round(pearson_res[6], 4),
-                pearson_res[4],
-                round(l2_res[0], 4),
-                round(l2_res[1], 4),
-                round(l2_res[2], 4),
-                round(l2_res[5], 4),
-                round(l2_res[6], 4),
-                l2_res[4],
-                class_type
-            ]) # collect data of current triplet, rounding the values to 4 digits after decimal
-
-        except Exception as e:
-            print(f"❌ Error on triplet {i}: {e}")
-
-    # global scores computation and collection
-    print("on to global calculations")
-    cos_accuracy = cos_accuracy / len(result_rows) * 100 if result_rows else 0.0
-    pearson_accuracy = pearson_accuracy / len(result_rows) * 100 if result_rows else 0.0
-    l2_accuracy = l2_accuracy / len(result_rows) * 100 if result_rows else 0.0
-    cos_avg_log_likelihood = cos_total_log_likelihood / len(result_rows) if result_rows else 0.0
-    pearson_avg_log_likelihood = pearson_total_log_likelihood / len(result_rows) if result_rows else 0.0
-    l2_avg_log_likelihood = l2_total_log_likelihood / len(result_rows) if result_rows else 0.0
-    cos_avg_new_score = cos_total_new_score / len(result_rows) if result_rows else 0.0
-    pearson_avg_new_score = pearson_total_new_score / len(result_rows) if result_rows else 0.0
-    l2_avg_new_score = l2_total_new_score / len(result_rows) if result_rows else 0.0
-    output_name = f"results_{model_type}_{dataset_name}.csv"
-
-    with open(output_name, "w") as f:
-        f.write(f"# Method: {model_type} | Dataset: {dataset_name} | Cos: | Accuracy: "
-                f"{cos_accuracy:.2f}% | Avg Log-Likelihood: {cos_avg_log_likelihood:.4f} | Avg new score: {cos_avg_new_score:.4f}  | Pearson: | Accuracy: " 
-                f"{pearson_accuracy:.2f}% | Avg Log-Likelihood: {pearson_avg_log_likelihood:.4f} | Avg new score: {pearson_avg_new_score:.4f} | L2: | Accuracy: "
-                f"{l2_accuracy:.2f}% | Avg Log-Likelihood: {l2_avg_log_likelihood:.4f} | Avg new score: {l2_avg_new_score:.4f}\n")
-        
-        df = pd.DataFrame(result_rows, columns=[
-            "triplet_id", "img1_path", "img2_path", "img3_path", "most_similar", 
-            "c_comp_23", "c_comp_13", "c_comp_12", "c_log_likelihood", "c_new_score", "c_correct",
-            "p_comp_23", "p_comp_13", "p_comp_12", "p_log_likelihood", "p_new_score", "p_correct",
-            "l2_comp_23", "l2_comp_13", "l2_comp_12", "l2_log_likelihood", "l2_new_score", "l2_correct",
-            "class_type"
-        ])
-        df.to_csv(f, sep=",", index=False)
-        print("file done")
-
-    print(f"✅ Saved {output_name} with {len(result_rows)} rows")
+        img_paths = [os.path.join(image_dir, os.path.basename(row[j])) for j in range(3)]
+        imgs = [load_image_cv2(p) for p in img_paths]
+        if any(img is None for img in imgs):
+            continue
+        features_by_layer = [get_layer_features(img, session) for img in imgs]
+        for layer in LAYER_OUTPUTS:
+            features = [f[layer] for f in features_by_layer]
+            res = computations_l2(features, row)
+            results[layer].append([i] + res)
+    for layer in LAYER_OUTPUTS:
+        df = pd.DataFrame(results[layer], columns=["triplet_id", "sim_23", "sim_13", "sim_12", "label", "is_correct"])
+        df.to_csv(f"results_{layer}.csv", index=False)
+        print(f"Saved results for {layer}")
 
 # === RUN ALL COMBINATIONS ===
 if __name__ == "__main__":
     print("Initializing Inference")
-    for model in ["FERPlus"]:
-        for dataset in ["train2"]:
-                print("Running inference with " + str(model) + "on " + str(dataset))
-                run_inference_and_save(model, dataset)
+    for dataset in ["ValidTriplets"]:
+        print("Running inference on", dataset)
+        run_inference_and_save(dataset)
     
     
 
