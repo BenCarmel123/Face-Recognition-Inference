@@ -7,23 +7,21 @@ import pandas as pd
 import cv2
 import onnxruntime as ort
 from numpy.linalg import norm
-from models.FECNet import FECNet
 from pathlib import Path
 
 # === CONFIG ===
 DEVICE = torch.device("cpu")
 NUM_TRIPLETS = 1592
 LABELS = { # labels
-    "train2": "data/labels.csv", # original cropping method
+    "labels": "data/labels.csv", # original cropping method
 }
 
 IMAGE_DIRS = { # images
-    "train2": "data/train2", 
+    "ValidTriplets": "data/ValidTriplets", 
 }
 
-FERPLUS_PATH = "emotion-ferplus.onnx" # Liron's model 
-FECNET_PATH = "FECNet.pt" # new model
-DATASET_CSV = "data/FEC_dataset/faceexp-comparison-data-train-public.csv"
+FERPLUS_PATH = "ferplus/emotion-ferplus.onnx" # Liron's model 
+DATASET_CSV = "data/faceexp-comparison-data-train-public.csv"
 
 # === HELPERS ===
 def load_image_cv2(path): # load image from cv2
@@ -62,10 +60,6 @@ def extract_original_row_index(filename): # get original triplet index
     except:
         pass
     return None
-
-def get_features_fecnet(img): # returns the vector representation of the image according to original model
-    from get_representation import get_FECNet_representation
-    return get_FECNet_representation(img)
 
 def get_fer_8_plus_representation(img, session):
     """
@@ -276,7 +270,7 @@ def run_inference_and_save(model_type, dataset_name):
 # === RUN ALL COMBINATIONS ===
 if __name__ == "__main__":
     print("Initializing Inference")
-    for model in ["FECNet", "FERPlus"]:
+    for model in ["FERPlus"]:
         for dataset in ["train2"]:
                 print("Running inference with " + str(model) + "on " + str(dataset))
                 run_inference_and_save(model, dataset)
